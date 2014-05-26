@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <boost/variant/variant.hpp>
+#include <boost/variant/get.hpp>
 
 enum class SpecialToken {
     eof = -1,
@@ -22,7 +23,7 @@ enum class SpecialToken {
     number = -5
 };
 
-using Token = boost::variant<SpecialToken, int>;
+using Token = boost::variant<SpecialToken, char>;
 
 static std::string IdentifierStr;
 static double NumVal;
@@ -119,11 +120,159 @@ public:
     : Proto {proto}, Body {body} {}
 };
 
+/// CurTok/getNextToken - Provide a simple token buffer. CurTok is the current
+/// token the parser is looking at. getNextToken reads another token from the Lexer and updates CurTok with its results.
+static Token CurTok;
+static Token getNextToken() {
+    return CurTok = gettok();
+}
 
+/// Error* - These are little helper functions for error handling.
+ExprAST *Error(const char *Str) { fprintf(stderr, "Error: %s\n", Str); return nullptr;}
+PrototypeAST *ErrorP(const char *Str) { Error(Str); return nullptr; }
+FunctionAST *ErrorF(const char *Str) { Error(Str); return nullptr; }
+
+/// numberexpr ::= number
+static ExprAST *ParseNumberExpr() {
+    ExprAST *Result = new NumberExprAST(NumVal);
+    getNextToken();
+    return Result;
+}
+
+static ExprAST* ParseExpression();
+
+/// paranexpr ::= ')' expression ')'
+static ExprAST *ParseParenExpr() {
+    getNextToken();
+    ExprAST *V = ParseExpression();
+    if(!V) return nullptr;
+    
+    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')')
+        return Error("expected ')'");
+    getNextToken(); // eat ).
+    return V;
+}
+
+/// identifierexpr
+///    ::= identifier
+///    ::= identifier '(' expression* ')'
+static ExprAST *ParseIdentifierExpr() {
+    std::string IdName = IdentifierStr;
+    
+    getNextToken();
+    
+    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) !=  '(')
+        return new VariableExprAST(IdName);
+    
+    // Call
+    getNextToken();
+    std::vector<ExprAST*> Args;
+    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')') {
+        while(true) {
+            ExprAST *Arg = ParseExpression();
+            if(!Arg) return nullptr;
+            Args.push_back(Arg);
+            
+            if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) == ')') break;
+            if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ',')
+                return Error("Expected ')' or ',' in argument list");
+            getNextToken();
+        }
+    }
+    
+    getNextToken();
+    return new CallExprAST(IdName, Args);
+}
+
+/// primary
+/// ::= identifierexpr
+/// ::= numberexpr
+/// ::= parenexpr
+static ExprAST *ParsePrimary() {
+    class selector : public boost::static_visitor<ExprAST*> {
+    public:
+        ExprAST* operator()(SpecialToken token) const {
+            switch(token) {
+                case SpecialToken::identifier:
+                    return ParseIdentifierExpr();
+                case SpecialToken::number:
+                    return ParseNumberExpr();
+                default:
+                    return Error("unknown token when expecting an expression");
+            }
+        }
+        
+        ExprAST* operator()(char token) const {
+            switch(token) {
+                case '(':
+                    return ParseParenExpr();
+                default:
+                    return Error("unknown token when expecting an expression");
+            }
+        }
+    };
+    
+    return boost::apply_visitor(selector(), CurTok);
+}
+
+/// BinopPrecedence - This holds the precedence for each binary operator that is
+/// defined,
+static std::map<char, int> BinopPrecedence;
+
+static int GetTokPrecedence() {
+    class selector : public boost::static_visitor<int> {
+    public:
+        char operator()(SpecialToken token) const {
+            return -1;
+        }
+        char operator()(char token) const {
+            if(!isascii(token)) return -1;
+            int TokPrec = BinopPrecedence[token];
+            if(TokPrec <= 0) return -1;
+            return TokPrec;
+        }
+    };
+    
+    return boost::apply_visitor(selector(), CurTok);
+}
+
+static ExprAST* ParseBinOpRHS(int ExprPre, ExprAST *LHS);
+
+/// expression
+/// ::= primary binoprhs
+///
+static ExprAST* ParseExpression() {
+    ExprAST *LHS = ParsePrimary();
+    if(!LHS) return nullptr;
+    
+    return ParseBinOpRHS(0, LHS);
+}
+
+// binoprhs
+/// ::= ('+' primary)*
+static ExprAST* ParseBinOpRHS(int ExprPrec, ExprAST *LHS) {
+    // if this is a binop, find its precedence.
+    while(true) {
+        int TokPrec = GetTokPrecedence();
+        
+        // if this is a binop that binds at least as tightly as the current binop,
+        // consume it, otherwise we are done.
+        if(TokPrec < ExprPrec)
+            return LHS;
+        Token BinOp = CurTok;
+        getNextToken();
+        
+        ExprAST* RHS = ParsePrimary();
+        if(!RHS) return nullptr;
+    }
+}
 
 int main(int argc, const char * argv[])
 {
-
+    BinopPrecedence['<'] = 10;
+    BinopPrecedence['+'] = 20;
+    BinopPrecedence['-'] = 20;
+    BinopPrecedence['*'] = 40;
     // insert code here...
     std::cout << "Hello, World!\n";
     return 0;
