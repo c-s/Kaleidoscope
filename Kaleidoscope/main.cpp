@@ -264,6 +264,125 @@ static ExprAST* ParseBinOpRHS(int ExprPrec, ExprAST *LHS) {
         
         ExprAST* RHS = ParsePrimary();
         if(!RHS) return nullptr;
+        
+        // if BinOp binds less tightly with RHS than the operator after RHS, let
+        // the pending operator take RHS as its LHS.
+        int NextPrec = GetTokPrecedence();
+        if(TokPrec < NextPrec) {
+            RHS = ParseBinOpRHS(TokPrec+1, RHS);
+            if(!RHS) return nullptr;
+        }
+        // Merge LHS/RHS
+        LHS = new BinaryExprAST(boost::get<char>(BinOp), LHS, RHS);
+    } // Loop around to the top of the while loop.
+}
+
+/// prototype
+/// ::= id '(' id* ')'
+static PrototypeAST *ParsePrototype() {
+    if(CurTok.type() == typeid(SpecialToken) && boost::get<SpecialToken>(CurTok) != SpecialToken::identifier)
+        return ErrorP("Expected function name in prototype");
+    std::string FnName = IdentifierStr;
+    getNextToken();
+    
+    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != '(')
+        return ErrorP("Expected '(' in prototype");
+    
+    // read the list of argument names.
+    std::vector<std::string> ArgNames;
+    while(true) {
+        getNextToken();
+        if(CurTok.type() == typeid(SpecialToken) &&
+           boost::get<SpecialToken>(CurTok) == SpecialToken::identifier) break;
+        ArgNames.push_back(IdentifierStr);
+    }
+    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')')
+        return ErrorP("Expected ')' in prototype");
+    
+    // success
+    getNextToken(); // eat ')'.
+    
+    return new PrototypeAST(FnName, ArgNames);
+}
+
+/// definition ::= 'def' prototype expression
+static FunctionAST *ParseDefinition() {
+    getNextToken(); // eat def.
+    PrototypeAST *Proto = ParsePrototype();
+    if(!Proto) return nullptr;
+    
+    if(ExprAST *E = ParseExpression())
+        return new FunctionAST(Proto, E);
+    return nullptr;
+}
+
+/// external ::= 'extern' prototype
+static PrototypeAST *ParseExtern() {
+    getNextToken(); // eat extern.
+    return ParsePrototype();
+}
+
+/// topLevelexpr ::= expression
+static FunctionAST *ParseTopLevelExpr() {
+    if(ExprAST *E = ParseExpression()) {
+        // make an anonymous proto.
+        PrototypeAST *Proto = new PrototypeAST("", std::vector<std::string>());
+        return new FunctionAST(Proto, E);
+    }
+    return nullptr;
+}
+
+static void HandleDefinition() {
+    if(ParseDefinition()) {
+        std::cerr << "Parsed a function definition." << std::endl;
+    } else {
+        // skip token for error recovery.
+        getNextToken();
+    }
+}
+
+static void HandleExtern() {
+    if(ParseExtern()) {
+        std::cerr << "Parsed an extern." << std::endl;
+    } else {
+        // skip token for error recovery.
+        getNextToken();
+    }
+}
+
+static void HandleTopLevelExpression() {
+    // evaluate a top-level expression into an anonymous function.
+    if(ParseTopLevelExpr()) {
+        std::cerr << "Parsed a top-level expr." << std::endl;
+    } else {
+        // skip token for error recovery.
+        getNextToken();
+    }
+}
+
+/// top ::= definition | external | expression | ';'
+static void MainLoop() {
+    class selector : public boost::static_visitor<void> {
+    public:
+        void operator()(SpecialToken token) const {
+            switch(token) {
+                case SpecialToken::eof: return;
+                case SpecialToken::def: HandleDefinition(); break;
+                case SpecialToken::extrn: HandleExtern(); break;
+                default: HandleTopLevelExpression(); break;
+            }
+        }
+        void operator()(char token) const {
+            switch(token) {
+                case ';': getNextToken(); break;
+                default: HandleTopLevelExpression(); break;
+            }
+        }
+    };
+    
+    while(true) {
+        std::cerr << "ready> ";
+        boost::apply_visitor(selector(), CurTok);
     }
 }
 
@@ -273,8 +392,14 @@ int main(int argc, const char * argv[])
     BinopPrecedence['+'] = 20;
     BinopPrecedence['-'] = 20;
     BinopPrecedence['*'] = 40;
-    // insert code here...
-    std::cout << "Hello, World!\n";
+
+    // prime the first token.
+    std::cerr << "ready> ";
+    getNextToken();
+    
+    // run the main "interpreter loop" now.
+    MainLoop();
+    
     return 0;
 }
 
