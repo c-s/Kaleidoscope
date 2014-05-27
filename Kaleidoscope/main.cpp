@@ -28,8 +28,9 @@ using Token = boost::variant<SpecialToken, char>;
 static std::string IdentifierStr;
 static double NumVal;
 
+/// gettok - return the next token from standard output.
 static Token gettok() {
-    static int LastChar = ' ';
+    static char LastChar = ' ';
     
     while(isspace(LastChar))
         LastChar = getchar();
@@ -56,7 +57,7 @@ static Token gettok() {
     
     if(LastChar == '#') {
         do LastChar = getchar();
-        while (LastChar != EOF && LastChar!= '\n' && LastChar != '\r');
+        while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
         
         if(LastChar != EOF)
             return gettok();
@@ -65,60 +66,77 @@ static Token gettok() {
     if(LastChar == EOF)
         return SpecialToken::eof;
     
-    int ThisChar = LastChar;
+    char ThisChar = LastChar;
     LastChar = getchar();
     return ThisChar;
 }
 
-class ExprAST {
-public:
-    virtual ~ExprAST() {}
-};
-
-class NumberExprAST : public ExprAST {
-    double Val;
-public:
-    NumberExprAST(double val) : Val {val} {}
-};
-
-class VariableExprAST : public ExprAST {
-    std::string Name;
-public:
-    VariableExprAST(const std::string &name) : Name {name} {}
-};
-
-class BinaryExprAST : public ExprAST {
-    char Op;
-    ExprAST *LHS, *RHS;
-public:
-    BinaryExprAST(char op, ExprAST *lhs, ExprAST *rhs)
-    : Op{op}, LHS {lhs}, RHS {rhs} {}
-};
-
-class CallExprAST : public ExprAST {
-    std:: string Callee;
-    std::vector<ExprAST*> Args;
-public:
-    CallExprAST(const std::string &callee, std::vector<ExprAST*> &args)
-    : Callee {callee}, Args {args} {}
-};
-
-class PrototypeAST {
-    std::string Name;
-    std::vector<std::string> Args;
+//===----------------------------------------------------------===//
+// Abstract Syntax Tree (aka Parse Tree)
+//===----------------------------------------------------------===//
+namespace {
+    /// ExprAST - Base class for all expression nodes.
+    class ExprAST {
+    public:
+        virtual ~ExprAST() {}
+    };
     
-public:
-    PrototypeAST(const std::string &name, const std::vector<std::string> &args)
-    : Name {name}, Args {args} {}
-};
+    /// NumberExprAST - Expression class for numeric literals like "1.0".
+    class NumberExprAST : public ExprAST {
+        double Val;
+    public:
+        NumberExprAST(double val) : Val {val} {}
+    };
+    
+    /// VariableExprAST - Expression class for referencing a variable, like "a".
+    class VariableExprAST : public ExprAST {
+        std::string Name;
+    public:
+        VariableExprAST(const std::string &name) : Name {name} {}
+    };
+    
+    /// BinaryExprAST - Expression class for a binary operator.
+    class BinaryExprAST : public ExprAST {
+        char Op;
+        ExprAST *LHS, *RHS;
+    public:
+        BinaryExprAST(char op, ExprAST *lhs, ExprAST *rhs)
+        : Op{op}, LHS {lhs}, RHS {rhs} {}
+    };
+    
+    /// CallExprAST - Expression class for function calls.
+    class CallExprAST : public ExprAST {
+        std:: string Callee;
+        std::vector<ExprAST*> Args;
+    public:
+        CallExprAST(const std::string &callee, std::vector<ExprAST*> &args)
+        : Callee {callee}, Args {args} {}
+    };
+    
+    /// PrototypeAST - This class represents the "prototype" for a function,
+    /// which captures its name, and its argument names (thus implicitly the number
+    /// of arguments the function takes).
+    class PrototypeAST {
+        std::string Name;
+        std::vector<std::string> Args;
+    public:
+        PrototypeAST(const std::string &name, const std::vector<std::string> &args)
+        : Name {name}, Args {args} {}
+    };
+    
+    /// FunctionAST - This class represents a function definition itself.
+    class FunctionAST {
+        PrototypeAST *Proto;
+        ExprAST *Body;
+    public:
+        FunctionAST(PrototypeAST *proto, ExprAST *body)
+        : Proto {proto}, Body {body} {}
+    };
+} // end anonymous namespace
 
-class FunctionAST {
-    PrototypeAST *Proto;
-    ExprAST *Body;
-public:
-    FunctionAST(PrototypeAST *proto, ExprAST *body)
-    : Proto {proto}, Body {body} {}
-};
+//===----------------------------------------------===//
+// Parse
+//===----------------------------------------------===//
 
 /// CurTok/getNextToken - Provide a simple token buffer. CurTok is the current
 /// token the parser is looking at. getNextToken reads another token from the Lexer and updates CurTok with its results.
@@ -147,7 +165,7 @@ static ExprAST *ParseParenExpr() {
     ExprAST *V = ParseExpression();
     if(!V) return nullptr;
     
-    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')')
+    if(CurTok.type() != typeid(char) || (CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')'))
         return Error("expected ')'");
     getNextToken(); // eat ).
     return V;
@@ -161,20 +179,20 @@ static ExprAST *ParseIdentifierExpr() {
     
     getNextToken();
     
-    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) !=  '(')
+    if(CurTok.type() != typeid(char) || (CurTok.type() == typeid(char) && boost::get<char>(CurTok) !=  '('))
         return new VariableExprAST(IdName);
     
     // Call
     getNextToken();
     std::vector<ExprAST*> Args;
-    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')') {
+    if(CurTok.type() != typeid(char) || (CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')')) {
         while(true) {
             ExprAST *Arg = ParseExpression();
             if(!Arg) return nullptr;
             Args.push_back(Arg);
             
             if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) == ')') break;
-            if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ',')
+            if(CurTok.type() != typeid(char) || (CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ','))
                 return Error("Expected ')' or ',' in argument list");
             getNextToken();
         }
@@ -198,6 +216,7 @@ static ExprAST *ParsePrimary() {
                 case SpecialToken::number:
                     return ParseNumberExpr();
                 default:
+                    std::cerr << "1: token is " << static_cast<int>(token) << std::endl;
                     return Error("unknown token when expecting an expression");
             }
         }
@@ -207,6 +226,8 @@ static ExprAST *ParsePrimary() {
                 case '(':
                     return ParseParenExpr();
                 default:
+                    std::cerr << "2: token is " << token << std::endl;
+
                     return Error("unknown token when expecting an expression");
             }
         }
@@ -219,6 +240,7 @@ static ExprAST *ParsePrimary() {
 /// defined,
 static std::map<char, int> BinopPrecedence;
 
+/// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
     class selector : public boost::static_visitor<int> {
     public:
@@ -280,23 +302,25 @@ static ExprAST* ParseBinOpRHS(int ExprPrec, ExprAST *LHS) {
 /// prototype
 /// ::= id '(' id* ')'
 static PrototypeAST *ParsePrototype() {
-    if(CurTok.type() == typeid(SpecialToken) && boost::get<SpecialToken>(CurTok) != SpecialToken::identifier)
+    if(CurTok.type() != typeid(SpecialToken) ||
+       (CurTok.type() == typeid(SpecialToken) && boost::get<SpecialToken>(CurTok) != SpecialToken::identifier))
         return ErrorP("Expected function name in prototype");
     std::string FnName = IdentifierStr;
     getNextToken();
     
-    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != '(')
+    if(CurTok.type() != typeid(char) ||
+       (CurTok.type() == typeid(char) && boost::get<char>(CurTok) != '('))
         return ErrorP("Expected '(' in prototype");
     
     // read the list of argument names.
     std::vector<std::string> ArgNames;
     while(true) {
         getNextToken();
-        if(CurTok.type() == typeid(SpecialToken) &&
-           boost::get<SpecialToken>(CurTok) == SpecialToken::identifier) break;
+        if(!(CurTok.type() == typeid(SpecialToken) &&
+           boost::get<SpecialToken>(CurTok) == SpecialToken::identifier)) break;
         ArgNames.push_back(IdentifierStr);
     }
-    if(CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')')
+    if(CurTok.type() != typeid(char) || (CurTok.type() == typeid(char) && boost::get<char>(CurTok) != ')'))
         return ErrorP("Expected ')' in prototype");
     
     // success
